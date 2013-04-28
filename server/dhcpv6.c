@@ -14,7 +14,6 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include "thudef.h"
 #include "dhcpd.h"
 
 #ifdef DHCPv6
@@ -4241,11 +4240,12 @@ shared_network_from_packet6(struct shared_network **shared,
 	return status;
 }
 
-//
+//DHCPv4 over DHCPv6 request message
 
 static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* packet) {
-    struct option_cache* opt = lookup_option(&dhcpv6_universe, packet->options, OPTION_BOOTP_MSG);
-    printf("%s\n", opt->data.data);
+    // struct option_cache* opt = lookup_option(&dhcpv6_universe, packet->options, OPTION_BOOTP_MSG);
+    // unsigned int length = opt->data.len;
+    // const unsigned char data = opt->data.data;
 }
 
 /*
@@ -5805,7 +5805,6 @@ build_dhcpv6_reply(struct data_string *reply, struct packet *packet) {
             printf("DHCPV6_BOOTP_REQUEST\n");
             dhcpv6BootpRequest(reply, packet);
             break;
-
 		default:
 			/* XXX: would be nice if we had "notice" level, 
 				as syslog, for this */

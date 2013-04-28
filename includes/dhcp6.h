@@ -110,6 +110,11 @@
 #define DHCPV6_LEASEQUERY	   14
 #define DHCPV6_LEASEQUERY_REPLY    15
 
+//DHCPv4 over DHCPv6 message types and option codes
+#define DHCPV6_BOOTP_REQUEST 245
+#define DHCPV6_BOOTP_REPLY 246
+#define OPTION_BOOTP_MSG 54321
+
 extern const char *dhcpv6_type_names[];
 extern const int dhcpv6_type_name_max;
 

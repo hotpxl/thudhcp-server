@@ -1,5 +1,0 @@
-#pragma once
-
-#define DHCPV6_BOOTP_REQUEST 245
-#define DHCPV6_BOOTP_REPLY 246
-#define OPTION_BOOTP_MSG 54321
