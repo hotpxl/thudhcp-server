@@ -1452,6 +1452,7 @@ isc_result_t got_one (h)
 #ifdef DHCPv6
 isc_result_t
 got_one_v6(omapi_object_t *h) {
+    printf("got_one_v6\n");
 	struct sockaddr_in6 from;
 	struct in6_addr to;
 	struct iaddr ifrom;

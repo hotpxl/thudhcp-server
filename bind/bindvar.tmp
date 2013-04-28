@@ -1,0 +1,2 @@
+binddir=/home/kevin/4over6/thudhcp-server/bind
+GMAKE=make

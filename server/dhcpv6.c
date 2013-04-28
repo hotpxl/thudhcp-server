@@ -14,6 +14,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include "thudef.h"
 #include "dhcpd.h"
 
 #ifdef DHCPv6
@@ -4240,6 +4241,13 @@ shared_network_from_packet6(struct shared_network **shared,
 	return status;
 }
 
+//
+
+static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* packet) {
+    struct option_cache* opt = lookup_option(&dhcpv6_universe, packet->options, OPTION_BOOTP_MSG);
+    printf("%s\n", opt->data.data);
+}
+
 /*
  * When a client thinks it might be on a new link, it sends a 
  * Confirm message.
@@ -5793,6 +5801,11 @@ build_dhcpv6_reply(struct data_string *reply, struct packet *packet) {
 		case DHCPV6_LEASEQUERY_REPLY:
 			dhcpv6_discard(packet);
 			break;
+        case DHCPV6_BOOTP_REQUEST:
+            printf("DHCPV6_BOOTP_REQUEST\n");
+            dhcpv6BootpRequest(reply, packet);
+            break;
+
 		default:
 			/* XXX: would be nice if we had "notice" level, 
 				as syslog, for this */
