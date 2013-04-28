@@ -1,5 +1,5 @@
-h1. Introduction
+# Introduction
 Tottaly based on ISC's DHCP 4.2.5-P1
 
-h2. Usage
+# Usage
 I don't know
