@@ -4241,12 +4241,45 @@ shared_network_from_packet6(struct shared_network **shared,
 }
 
 //DHCPv4 over DHCPv6 request message
+//MARK
 
+#define UDP_HEADER_LENGTH 8
+
+typedef pseudoHeader {
+    u_int32_t source_   
 static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* packet) {
-    // struct option_cache* opt = lookup_option(&dhcpv6_universe, packet->options, OPTION_BOOTP_MSG);
-    // unsigned int length = opt->data.len;
-    // const unsigned char data = opt->data.data;
+    struct option_cache* opt = lookup_option(&dhcpv6_universe, packet->options, OPTION_BOOTP_MSG);
+    unsigned int length = opt->data.len;
+    const unsigned char* data = opt->data.data;
+    int sockfd;
+    struct sockaddr_in serverAddr, clientAddr, tempAddr;
+    if ((sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
+        printf("socket error\n");
+    }
+    //if ((setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on))) <0) {
+    //    printf("setsockopt error\n");
+    //}
+    //if ((setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on))) <0) {
+    //    printf("setsockopt error\n");
+    //}
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    memset(&clientAddr, 0, sizeof(clientAddr));
+    clientAddr.sin_family = AF_INET;
+    clientAddr.sin_port = htons(68);
+    clientAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if ((bind(sockfd, (struct sockaddr*) &clientAddr, sizeof(clientAddr))) < 0) {
+        printf("bind error\n");
+    }
+    serverAddr.sin_port = htons(67);
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    if ((sendto(sockfd, data, length + UDP_HEADER_LENGTH, 0, (struct sockaddr*) &serverAddr, sizeof(serverAddr))) < 0) {
+        printf("send error\n");
+    }
+    char buf[1024];
+    recvfrom(sockfd, buf, 1024, 0, (struct sockaddr*) &tempAddr, sizeof(tempAddr);
 }
+#undef UDP_HEADER_LENGTH
 
 /*
  * When a client thinks it might be on a new link, it sends a 
