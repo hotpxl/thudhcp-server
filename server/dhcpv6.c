@@ -4323,8 +4323,7 @@ uint16_t getUDPChecksum(struct ipHdr* ipHeader, struct udpHdr* udpHeader, int le
     return (uint16_t) ~sum;
 }
 
-struct sockaddr_ll device;
-int redirectSocket = -1;
+unsigned char recvBuf[512];
 
 static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* packet) {
     struct option_cache* opt = lookup_option(&dhcpv6_universe, packet->options, OPTION_BOOTP_MSG);
@@ -4335,7 +4334,7 @@ static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* pack
     struct udpHdr* udpHeader = (struct udpHdr*) (data + sizeof(struct ipHdr));
     const char* srcIP = "0.0.0.0";
     const char* destIP = "255.255.255.255";
-    const char* interface = "eth0";
+    const char* interface = "eth1";
     memset(data, 0, sizeof(IP_MAXPACKET * sizeof(uint8_t)));
     memcpy(data + IP_HEADER_LENGTH + UDP_HEADER_LENGTH, dhcpData, dhcpDataLen);
     // IPv4 header
@@ -4357,37 +4356,62 @@ static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* pack
     udpHeader->len = htons(UDP_HEADER_LENGTH + dhcpDataLen);
     udpHeader->check = 0;
     udpHeader->check = getUDPChecksum(ipHeader, udpHeader, UDP_HEADER_LENGTH + dhcpDataLen);
-    if (redirectSocket < 0) {
-        int sd, i;
-        struct ifreq ifr;
-        unsigned char dstMac[6];
-        memset(&ifr, 0, sizeof(struct ifreq));
-        memset(&device, 0, sizeof(struct sockaddr_ll));
-        memcpy(ifr.ifr_name, interface, sizeof(interface));
-        if ((sd = socket(PF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
-            printf("Get socket error\n");
-        }
-        if (ioctl(sd, SIOCGIFHWADDR, &ifr) < 0) {
-            printf("Get hardware index error\n");
-        }
-        close(sd);
-        for (i = 0; i < 6; ++i) {
-            dstMac[i] = 0xff;
-        }
-        if (!(device.sll_ifindex = if_nametoindex(interface))) {
-            printf("if_nametoindex failed\n");
-        }
-        device.sll_family = AF_PACKET;
-        device.sll_protocol = htons(ETH_P_IP);
-        memcpy(device.sll_addr, dstMac, 6);
-        device.sll_halen = htons(6);
-        redirectSocket = socket(PF_PACKET, SOCK_DGRAM, htons(ETH_P_ALL));
-        printf("Get socket to redirect\n");
+
+    // Redirect
+    struct sockaddr_ll device;
+    int sd, redirectSocket, i;
+    struct ifreq ifr;
+    unsigned char dstMac[6];
+    memset(&ifr, 0, sizeof(struct ifreq));
+    memset(&device, 0, sizeof(struct sockaddr_ll));
+    memcpy(ifr.ifr_name, interface, sizeof(interface));
+    if ((sd = socket(PF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
+        printf("Get auxilarry socket error\n");
     }
+    if (ioctl(sd, SIOCGIFHWADDR, &ifr) < 0) {
+        printf("Get hardware index error\n");
+    }
+    close(sd);
+    for (i = 0; i < 6; ++i) {
+        dstMac[i] = 0xff;
+    }
+    if (!(device.sll_ifindex = if_nametoindex(interface))) {
+        printf("if_nametoindex failed\n");
+    }
+    device.sll_family = AF_PACKET;
+    device.sll_protocol = htons(ETH_P_IP);
+    memcpy(device.sll_addr, dstMac, 6);
+    device.sll_halen = htons(6);
+    redirectSocket = socket(PF_PACKET, SOCK_DGRAM, htons(ETH_P_ALL));
+    if (redirectSocket < 0) {
+        printf("Get socket error\n");
+    }
+    printf("Got device and socket to redirect\n");
     if (sendto(redirectSocket, data, IP_HEADER_LENGTH + UDP_HEADER_LENGTH + dhcpDataLen, 0, (struct sockaddr*) &device, sizeof(struct sockaddr_ll)) < 0) {
         printf("sendto error: %d\n", errno);
     }
+    printf("redirected\n");
     free(data);
+
+    // Receive
+    memset(recvBuf, 0, sizeof(recvBuf));
+    int received = recv(redirectSocket, recvBuf, sizeof(recvBuf), 0);
+    printf("Received: %d\n", received);
+    for (i = 0; i < received; ++i) {
+        if (isprint(recvBuf[i])) {
+            putchar(recvBuf[i]);
+        } else {
+            putchar('.');
+        }
+    }
+    printf("\n");
+    close(redirectSocket);
+
+    // Reply
+    replyRet->buffer = 0;
+    replyRet->data = recvBuf + IP_HEADER_LENGTH + UDP_HEADER_LENGTH;
+    replyRet->len = received - IP_HEADER_LENGTH - UDP_HEADER_LENGTH;
+    printf("Replied\n");
 }
 
 /*
