@@ -4280,6 +4280,7 @@ struct udpHdr {
 
 #define IP_HEADER_LENGTH 20
 #define UDP_HEADER_LENGTH 8
+#define DHCPV6_HEADER_LENGTH 8
 
 // Calculate IP header checksum
 uint16_t ipChecksum(struct ipHdr* ipHeader, int len) {
@@ -4323,7 +4324,7 @@ uint16_t getUDPChecksum(struct ipHdr* ipHeader, struct udpHdr* udpHeader, int le
     return (uint16_t) ~sum;
 }
 
-unsigned char recvBuf[512];
+uint8_t recvBuf[1024];
 
 static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* packet) {
     struct option_cache* opt = lookup_option(&dhcpv6_universe, packet->options, OPTION_BOOTP_MSG);
@@ -4390,14 +4391,14 @@ static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* pack
     if (sendto(redirectSocket, data, IP_HEADER_LENGTH + UDP_HEADER_LENGTH + dhcpDataLen, 0, (struct sockaddr*) &device, sizeof(struct sockaddr_ll)) < 0) {
         printf("sendto error: %d\n", errno);
     }
-    printf("redirected\n");
+    printf("Redirected\n");
     free(data);
 
     // Receive
     memset(recvBuf, 0, sizeof(recvBuf));
-    int received = recv(redirectSocket, recvBuf, sizeof(recvBuf), 0);
-    printf("Received: %d\n", received);
-    for (i = 0; i < received; ++i) {
+    int recvLen = recv(redirectSocket, recvBuf, sizeof(recvBuf), 0);
+    printf("Received: %d\n", recvLen);
+    for (i = 0; i < recvLen; ++i) {
         if (isprint(recvBuf[i])) {
             putchar(recvBuf[i]);
         } else {
@@ -4408,9 +4409,15 @@ static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* pack
     close(redirectSocket);
 
     // Reply
-    replyRet->buffer = 0;
-    replyRet->data = recvBuf + IP_HEADER_LENGTH + UDP_HEADER_LENGTH;
-    replyRet->len = received - IP_HEADER_LENGTH - UDP_HEADER_LENGTH;
+    uint8_t* ptr = recvBuf + IP_HEADER_LENGTH + UDP_HEADER_LENGTH - DHCPV6_HEADER_LENGTH;
+    ptr[0] = DHCPV6_BOOTP_REPLY;
+    ptr[1] = rand() & 0xff;
+    ptr[2] = rand() & 0xff;
+    ptr[3] = rand() & 0xff;
+    *(uint16_t*) (ptr + 4) = htons(OPTION_BOOTP_MSG);
+    *(uint16_t*) (ptr + 6) = htons(recvLen - IP_HEADER_LENGTH - UDP_HEADER_LENGTH);
+    replyRet->data = ptr;
+    replyRet->len = recvLen - IP_HEADER_LENGTH - UDP_HEADER_LENGTH + DHCPV6_HEADER_LENGTH;
     printf("Replied\n");
 }
 
