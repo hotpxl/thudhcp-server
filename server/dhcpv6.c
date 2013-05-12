@@ -4240,46 +4240,155 @@ shared_network_from_packet6(struct shared_network **shared,
 	return status;
 }
 
-//DHCPv4 over DHCPv6 request message
-//MARK
+//DHCPv4 over DHCPv6 request message XXX MARK
 
+#include <net/if.h>
+#include <netinet/ip.h>
+#include <linux/if_ether.h>
+#include <linux/if_packet.h>
+#include <sys/ioctl.h>
+#include <bits/ioctls.h>
+
+struct ipHdr {
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+    unsigned int ihl:4;
+    unsigned int version:4;
+#elif __BYTE_ORDER == __BIG_ENDIAN
+    unsigned int version:4;
+    unsigned int ihl:4;
+#else
+# error	"Please fix <bits/endian.h>"
+#endif
+    u_int8_t tos;
+    u_int16_t tot_len;
+    u_int16_t id;
+    u_int16_t frag_off;
+    u_int8_t ttl;
+    u_int8_t protocol;
+    u_int16_t check;
+    u_int32_t saddr;
+    u_int32_t daddr;
+    /*The options start here. */
+};
+
+struct udpHdr {
+    u_int16_t source;
+    u_int16_t dest;
+    u_int16_t len;
+    u_int16_t check;
+};
+
+#define IP_HEADER_LENGTH 20
 #define UDP_HEADER_LENGTH 8
 
-typedef pseudoHeader {
-    u_int32_t source_   
+// Calculate IP header checksum
+uint16_t ipChecksum(struct ipHdr* ipHeader, int len) {
+    uint32_t sum = 0;
+    uint16_t* ptr = (uint16_t*) ipHeader;
+    while (1 < len) {
+        sum += *ptr++;
+        len -= sizeof(uint16_t);
+    }
+    if (len) {
+        sum += *(unsigned char*) ptr;
+    }
+    while (sum >> 16) {
+        sum = (sum >> 16) + (sum & 0xffff);
+    }
+    return (uint16_t) ~sum;
+}
+
+// Calculate UDP checksum
+uint16_t getUDPChecksum(struct ipHdr* ipHeader, struct udpHdr* udpHeader, int len) {
+    uint32_t sum = 0;
+    uint16_t* ptr = (uint16_t*) udpHeader;
+    while (1 < len) {
+        sum += *ptr++;
+        len -= sizeof(uint16_t);
+    }
+    if (len) {
+        sum += *(unsigned char*) ptr;
+    }
+    ptr = (uint16_t*) &ipHeader->saddr;
+    sum += *ptr++;
+    sum += *ptr;
+    ptr = (uint16_t*) &ipHeader->daddr;
+    sum += *ptr++;
+    sum += *ptr;
+    sum += htons(ipHeader->protocol);
+    sum += udpHeader->len;
+    while (sum >> 16) {
+        sum = (sum >> 16) + (sum & 0xffff);
+    }
+    return (uint16_t) ~sum;
+}
+
+struct sockaddr_ll device;
+int redirectSocket = -1;
+
 static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* packet) {
     struct option_cache* opt = lookup_option(&dhcpv6_universe, packet->options, OPTION_BOOTP_MSG);
-    unsigned int length = opt->data.len;
-    const unsigned char* data = opt->data.data;
-    int sockfd;
-    struct sockaddr_in serverAddr, clientAddr, tempAddr;
-    if ((sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
-        printf("socket error\n");
+    unsigned int dhcpDataLen = opt->data.len;
+    const unsigned char* dhcpData = opt->data.data;
+    uint8_t* data = (uint8_t*) calloc(IP_MAXPACKET, sizeof(uint8_t));
+    struct ipHdr* ipHeader = (struct ipHdr*) data;
+    struct udpHdr* udpHeader = (struct udpHdr*) (data + sizeof(struct ipHdr));
+    const char* srcIP = "0.0.0.0";
+    const char* destIP = "255.255.255.255";
+    const char* interface = "eth0";
+    memset(data, 0, sizeof(IP_MAXPACKET * sizeof(uint8_t)));
+    memcpy(data + IP_HEADER_LENGTH + UDP_HEADER_LENGTH, dhcpData, dhcpDataLen);
+    // IPv4 header
+    ipHeader->ihl = 5;
+    ipHeader->version = 4;
+    ipHeader->tos = 0;
+    ipHeader->tot_len = htons(IP_HEADER_LENGTH + UDP_HEADER_LENGTH + dhcpDataLen);
+    ipHeader->id = htons(0);
+    ipHeader->frag_off = htons(0);
+    ipHeader->ttl = 255;
+    ipHeader->protocol = IPPROTO_UDP;
+    ipHeader->check = htons(0);
+    ipHeader->saddr = inet_addr(srcIP);
+    ipHeader->daddr = inet_addr(destIP);
+    ipHeader->check = ipChecksum(ipHeader, IP_HEADER_LENGTH);
+    // UDP header
+    udpHeader->source = htons(68);
+    udpHeader->dest = htons(67);
+    udpHeader->len = htons(UDP_HEADER_LENGTH + dhcpDataLen);
+    udpHeader->check = 0;
+    udpHeader->check = getUDPChecksum(ipHeader, udpHeader, UDP_HEADER_LENGTH + dhcpDataLen);
+    if (redirectSocket < 0) {
+        int sd, i;
+        struct ifreq ifr;
+        unsigned char dstMac[6];
+        memset(&ifr, 0, sizeof(struct ifreq));
+        memset(&device, 0, sizeof(struct sockaddr_ll));
+        memcpy(ifr.ifr_name, interface, sizeof(interface));
+        if ((sd = socket(PF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
+            printf("Get socket error\n");
+        }
+        if (ioctl(sd, SIOCGIFHWADDR, &ifr) < 0) {
+            printf("Get hardware index error\n");
+        }
+        close(sd);
+        for (i = 0; i < 6; ++i) {
+            dstMac[i] = 0xff;
+        }
+        if (!(device.sll_ifindex = if_nametoindex(interface))) {
+            printf("if_nametoindex failed\n");
+        }
+        device.sll_family = AF_PACKET;
+        device.sll_protocol = htons(ETH_P_IP);
+        memcpy(device.sll_addr, dstMac, 6);
+        device.sll_halen = htons(6);
+        redirectSocket = socket(PF_PACKET, SOCK_DGRAM, htons(ETH_P_ALL));
+        printf("Get socket to redirect\n");
     }
-    //if ((setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on))) <0) {
-    //    printf("setsockopt error\n");
-    //}
-    //if ((setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on))) <0) {
-    //    printf("setsockopt error\n");
-    //}
-    memset(&serverAddr, 0, sizeof(serverAddr));
-    memset(&clientAddr, 0, sizeof(clientAddr));
-    clientAddr.sin_family = AF_INET;
-    clientAddr.sin_port = htons(68);
-    clientAddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    if ((bind(sockfd, (struct sockaddr*) &clientAddr, sizeof(clientAddr))) < 0) {
-        printf("bind error\n");
+    if (sendto(redirectSocket, data, IP_HEADER_LENGTH + UDP_HEADER_LENGTH + dhcpDataLen, 0, (struct sockaddr*) &device, sizeof(struct sockaddr_ll)) < 0) {
+        printf("sendto error: %d\n", errno);
     }
-    serverAddr.sin_port = htons(67);
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    if ((sendto(sockfd, data, length + UDP_HEADER_LENGTH, 0, (struct sockaddr*) &serverAddr, sizeof(serverAddr))) < 0) {
-        printf("send error\n");
-    }
-    char buf[1024];
-    recvfrom(sockfd, buf, 1024, 0, (struct sockaddr*) &tempAddr, sizeof(tempAddr);
+    free(data);
 }
-#undef UDP_HEADER_LENGTH
 
 /*
  * When a client thinks it might be on a new link, it sends a 
@@ -5835,7 +5944,7 @@ build_dhcpv6_reply(struct data_string *reply, struct packet *packet) {
 			dhcpv6_discard(packet);
 			break;
         case DHCPV6_BOOTP_REQUEST:
-            printf("DHCPV6_BOOTP_REQUEST\n");
+            printf("DHCPv6: BOOTP request received\n");
             dhcpv6BootpRequest(reply, packet);
             break;
 		default:
