@@ -4242,6 +4242,7 @@ shared_network_from_packet6(struct shared_network **shared,
 
 //DHCPv4 over DHCPv6 request message XXX MARK
 
+#include <sys/time.h>
 #include <net/if.h>
 #include <netinet/ip.h>
 #include <linux/if_ether.h>
@@ -4257,29 +4258,47 @@ struct ipHdr {
     unsigned int version:4;
     unsigned int ihl:4;
 #else
-# error	"Please fix <bits/endian.h>"
+#error "Please fix <bits/endian.h>"
 #endif
-    u_int8_t tos;
-    u_int16_t tot_len;
-    u_int16_t id;
-    u_int16_t frag_off;
-    u_int8_t ttl;
-    u_int8_t protocol;
-    u_int16_t check;
-    u_int32_t saddr;
-    u_int32_t daddr;
-    /*The options start here. */
+    uint8_t tos;
+    uint16_t tot_len;
+    uint16_t id;
+    uint16_t frag_off;
+    uint8_t ttl;
+    uint8_t protocol;
+    uint16_t check;
+    uint32_t saddr;
+    uint32_t daddr;
 };
 
 struct udpHdr {
-    u_int16_t source;
-    u_int16_t dest;
-    u_int16_t len;
-    u_int16_t check;
+    uint16_t source;
+    uint16_t dest;
+    uint16_t len;
+    uint16_t check;
+};
+
+struct dhcpPacket {
+    uint8_t op;
+    uint8_t htype;
+    uint8_t hlen;
+    uint8_t hops;
+    uint32_t xid;
+    uint16_t secs;
+    uint16_t lags;
+    uint32_t ciaddr;
+    uint32_t yiaddr;
+    uint32_t siaddr;
+    uint32_t giaddr;
+    uint8_t chaddr[16];
+    uint8_t sname[64];
+    uint8_t file[128];
+    uint8_t options[1500];
 };
 
 #define IP_HEADER_LENGTH 20
 #define UDP_HEADER_LENGTH 8
+#define DHCP_STATIC_LENGTH 236
 #define DHCPV6_HEADER_LENGTH 8
 
 // Calculate IP header checksum
@@ -4367,17 +4386,17 @@ static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* pack
     memset(&device, 0, sizeof(struct sockaddr_ll));
     memcpy(ifr.ifr_name, interface, sizeof(interface));
     if ((sd = socket(PF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
-        printf("Get auxilarry socket error\n");
+        printf("Get auxilarry socket error.\n");
     }
     if (ioctl(sd, SIOCGIFHWADDR, &ifr) < 0) {
-        printf("Get hardware index error\n");
+        printf("Get hardware index error.\n");
     }
     close(sd);
     for (i = 0; i < 6; ++i) {
         dstMac[i] = 0xff;
     }
     if (!(device.sll_ifindex = if_nametoindex(interface))) {
-        printf("if_nametoindex failed\n");
+        printf("if_nametoindex failed.\n");
     }
     device.sll_family = AF_PACKET;
     device.sll_protocol = htons(ETH_P_IP);
@@ -4385,40 +4404,69 @@ static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* pack
     device.sll_halen = htons(6);
     redirectSocket = socket(PF_PACKET, SOCK_DGRAM, htons(ETH_P_ALL));
     if (redirectSocket < 0) {
-        printf("Get socket error\n");
+        printf("Get socket error.\n");
     }
-    printf("Got device and socket to redirect\n");
+    printf("Got device and socket to redirect.\n");
     if (sendto(redirectSocket, data, IP_HEADER_LENGTH + UDP_HEADER_LENGTH + dhcpDataLen, 0, (struct sockaddr*) &device, sizeof(struct sockaddr_ll)) < 0) {
-        printf("sendto error: %d\n", errno);
+        printf("Send error: %d.\n", errno);
     }
-    printf("Redirected\n");
+    printf("Redirected.\n");
     free(data);
 
     // Receive
-    memset(recvBuf, 0, sizeof(recvBuf));
-    int recvLen = recv(redirectSocket, recvBuf, sizeof(recvBuf), 0);
-    printf("Received: %d\n", recvLen);
-    for (i = 0; i < recvLen; ++i) {
-        if (isprint(recvBuf[i])) {
-            putchar(recvBuf[i]);
-        } else {
-            putchar('.');
+    const int waitTime = 5;
+    int recvLen;
+    struct timeval timeout, startTime, endTime;
+    timeout.tv_sec = 3;
+    timeout.tv_usec = 0;
+    gettimeofday(&startTime, 0);
+    if (setsockopt(redirectSocket, SOL_SOCKET, SO_RCVTIMEO, (char*) &timeout, sizeof(struct timeval)) < 0) {
+        printf("Set socket timeout error.\n");
+    }
+    while (1) {
+        gettimeofday(&endTime, 0);
+        if (waitTime < endTime.tv_sec - startTime.tv_sec || endTime.tv_sec < startTime.tv_sec) {
+            break;
+        }
+        memset(recvBuf, 0, sizeof(recvBuf));
+        recvLen = recv(redirectSocket, recvBuf, sizeof(recvBuf), 0);
+        printf("Received: %d.\n", recvLen);
+        for (i = 0; i < recvLen; ++i) {
+            if (isprint(recvBuf[i])) {
+                putchar(recvBuf[i]);
+            } else {
+                putchar('.');
+            }
+        }
+        putchar('\n');
+        if (IP_HEADER_LENGTH + UDP_HEADER_LENGTH + DHCP_STATIC_LENGTH + 4 < recvLen) {
+            struct ipHdr* ipHeader = (struct ipHdr*) recvBuf;
+            struct udpHdr* udpHeader = (struct udpHdr*) (recvBuf + IP_HEADER_LENGTH);
+            struct dhcpPacket* dhcpPkt = (struct dhcpPacket*) (recvBuf + IP_HEADER_LENGTH + UDP_HEADER_LENGTH);
+            if (ipHeader->protocol == IPPROTO_UDP
+                && udpHeader->source == htons(67)
+                && udpHeader->dest == htons(68)
+                && dhcpPkt->op == 2
+                && dhcpPkt->options[0] == 0x63
+                && dhcpPkt->options[1] == 0x82
+                && dhcpPkt->options[2] == 0x53
+                && dhcpPkt->options[3] == 0x63) { // Reply valid
+                uint8_t* ptr = recvBuf + IP_HEADER_LENGTH + UDP_HEADER_LENGTH - DHCPV6_HEADER_LENGTH;
+                ptr[0] = DHCPV6_BOOTP_REPLY;
+                ptr[1] = rand() & 0xff;
+                ptr[2] = rand() & 0xff;
+                ptr[3] = rand() & 0xff;
+                *(uint16_t*) (ptr + 4) = htons(OPTION_BOOTP_MSG);
+                *(uint16_t*) (ptr + 6) = htons(recvLen - IP_HEADER_LENGTH - UDP_HEADER_LENGTH);
+                replyRet->data = ptr;
+                replyRet->len = recvLen - IP_HEADER_LENGTH - UDP_HEADER_LENGTH + DHCPV6_HEADER_LENGTH;
+                printf("Replied.\n");
+                close(redirectSocket);
+                break;
+            }
         }
     }
-    printf("\n");
-    close(redirectSocket);
-
-    // Reply
-    uint8_t* ptr = recvBuf + IP_HEADER_LENGTH + UDP_HEADER_LENGTH - DHCPV6_HEADER_LENGTH;
-    ptr[0] = DHCPV6_BOOTP_REPLY;
-    ptr[1] = rand() & 0xff;
-    ptr[2] = rand() & 0xff;
-    ptr[3] = rand() & 0xff;
-    *(uint16_t*) (ptr + 4) = htons(OPTION_BOOTP_MSG);
-    *(uint16_t*) (ptr + 6) = htons(recvLen - IP_HEADER_LENGTH - UDP_HEADER_LENGTH);
-    replyRet->data = ptr;
-    replyRet->len = recvLen - IP_HEADER_LENGTH - UDP_HEADER_LENGTH + DHCPV6_HEADER_LENGTH;
-    printf("Replied\n");
+    printf("Request handled.\n");
 }
 
 /*
