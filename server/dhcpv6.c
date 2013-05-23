@@ -4249,6 +4249,7 @@ shared_network_from_packet6(struct shared_network **shared,
 #include <linux/if_packet.h>
 #include <sys/ioctl.h>
 #include <bits/ioctls.h>
+#include <ifaddrs.h>
 
 struct ipHdr {
 #if __BYTE_ORDER == __LITTLE_ENDIAN
@@ -4343,7 +4344,7 @@ uint16_t getUDPChecksum(struct ipHdr* ipHeader, struct udpHdr* udpHeader, int le
     return (uint16_t) ~sum;
 }
 
-uint8_t recvBuf[1024];
+uint32_t serverAddr;
 
 static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* packet) {
     struct option_cache* opt = lookup_option(&dhcpv6_universe, packet->options, OPTION_BOOTP_MSG);
@@ -4354,7 +4355,6 @@ static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* pack
     struct udpHdr* udpHeader = (struct udpHdr*) (data + sizeof(struct ipHdr));
     const char* srcIP = "0.0.0.0";
     const char* destIP = "255.255.255.255";
-    const char* interface = "eth1";
     memset(data, 0, sizeof(IP_MAXPACKET * sizeof(uint8_t)));
     memcpy(data + IP_HEADER_LENGTH + UDP_HEADER_LENGTH, dhcpData, dhcpDataLen);
     // IPv4 header
@@ -4368,7 +4368,7 @@ static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* pack
     ipHeader->protocol = IPPROTO_UDP;
     ipHeader->check = htons(0);
     ipHeader->saddr = inet_addr(srcIP);
-    ipHeader->daddr = inet_addr(destIP);
+    ipHeader->daddr = dhcpData[DHCP_STATIC_LENGTH + 6] == 0x03 ? serverAddr : inet_addr(destIP);
     ipHeader->check = ipChecksum(ipHeader, IP_HEADER_LENGTH);
     // UDP header
     udpHeader->source = htons(68);
@@ -4378,25 +4378,16 @@ static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* pack
     udpHeader->check = getUDPChecksum(ipHeader, udpHeader, UDP_HEADER_LENGTH + dhcpDataLen);
 
     // Redirect
+    struct ifaddrs* ifAddr, * ifPtr;
     struct sockaddr_ll device;
-    int sd, redirectSocket, i;
-    struct ifreq ifr;
+    int redirectSocket, i;
     unsigned char dstMac[6];
-    memset(&ifr, 0, sizeof(struct ifreq));
+    if (getifaddrs(&ifAddr) == -1) {
+        printf("getifaddrs failed.\n");
+    }
     memset(&device, 0, sizeof(struct sockaddr_ll));
-    memcpy(ifr.ifr_name, interface, sizeof(interface));
-    if ((sd = socket(PF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
-        printf("Get auxilarry socket error.\n");
-    }
-    if (ioctl(sd, SIOCGIFHWADDR, &ifr) < 0) {
-        printf("Get hardware index error.\n");
-    }
-    close(sd);
     for (i = 0; i < 6; ++i) {
         dstMac[i] = 0xff;
-    }
-    if (!(device.sll_ifindex = if_nametoindex(interface))) {
-        printf("if_nametoindex failed.\n");
     }
     device.sll_family = AF_PACKET;
     device.sll_protocol = htons(ETH_P_IP);
@@ -4406,9 +4397,19 @@ static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* pack
     if (redirectSocket < 0) {
         printf("Get socket error.\n");
     }
-    printf("Got device and socket to redirect.\n");
-    if (sendto(redirectSocket, data, IP_HEADER_LENGTH + UDP_HEADER_LENGTH + dhcpDataLen, 0, (struct sockaddr*) &device, sizeof(struct sockaddr_ll)) < 0) {
-        printf("Send error: %d.\n", errno);
+    for (ifPtr = ifAddr; ifPtr != 0; ifPtr = ifPtr->ifa_next) {
+        if (!ifPtr->ifa_addr) {
+            continue;
+        }
+        if (ifPtr->ifa_addr->sa_family == AF_PACKET) {
+            if (!(device.sll_ifindex = if_nametoindex(ifPtr->ifa_name))) {
+                printf("if_nametoindex failed.\n");
+            }
+            printf("Redirect to %s.\n", ifPtr->ifa_name);
+            if (sendto(redirectSocket, data, IP_HEADER_LENGTH + UDP_HEADER_LENGTH + dhcpDataLen, 0, (struct sockaddr*) &device, sizeof(struct sockaddr_ll)) < 0) {
+                printf("Send error: %d.\n", errno);
+            }
+        }
     }
     printf("Redirected.\n");
     free(data);
@@ -4417,6 +4418,7 @@ static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* pack
     const int waitTime = 5;
     int recvLen;
     struct timeval timeout, startTime, endTime;
+    uint8_t recvBuf[1024];
     timeout.tv_sec = 3;
     timeout.tv_usec = 0;
     gettimeofday(&startTime, 0);
@@ -4460,6 +4462,7 @@ static void dhcpv6BootpRequest(struct data_string* replyRet, struct packet* pack
                 *(uint16_t*) (ptr + 6) = htons(recvLen - IP_HEADER_LENGTH - UDP_HEADER_LENGTH);
                 replyRet->data = ptr;
                 replyRet->len = recvLen - IP_HEADER_LENGTH - UDP_HEADER_LENGTH + DHCPV6_HEADER_LENGTH;
+                serverAddr = ipHeader->saddr;
                 printf("Replied.\n");
                 close(redirectSocket);
                 break;
